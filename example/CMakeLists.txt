@@ -50,6 +50,9 @@ list(APPEND EXECUTABLE_TARGETS run_image_localization)
 add_executable(run_video_slam run_video_slam.cc)
 list(APPEND EXECUTABLE_TARGETS run_video_slam)
 
+add_executable(run_livemap_slam run_livemap_slam.cc)
+list(APPEND EXECUTABLE_TARGETS run_livemap_slam)
+
 add_executable(run_video_localization run_video_localization.cc)
 list(APPEND EXECUTABLE_TARGETS run_video_localization)
 
