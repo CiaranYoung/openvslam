@@ -14,7 +14,6 @@
 #include <opencv2/core/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/videoio.hpp>
 #include <spdlog/spdlog.h>
 #include <popl.hpp>
 
@@ -123,6 +122,16 @@ bool dataset::load()
     return !m_frames.empty();
 }
 
+double get_dt(const frame& f0, const frame& f1, double fps=30.0) {
+    const double dt = f1.ts - f0.ts;
+    // assume fixed frame rate if dt is small to mitigate random noise in assigning timestamps
+    if (abs(dt) < 0.5) {
+        return (f1.number - f0.number) / fps;
+    }
+    // otherwise return frame timestamps
+    return dt;
+}
+
 void mono_tracking(const std::shared_ptr<openvslam::config>& cfg,
                    const std::string& vocab_file_path, const dataset& d, const std::string& mask_img_path,
                    const unsigned int frame_skip, const bool no_sleep, const bool auto_term,
@@ -145,12 +154,11 @@ void mono_tracking(const std::shared_ptr<openvslam::config>& cfg,
 
     std::vector<double> track_times;
     track_times.reserve(frames.size());
+    const frame* flast = nullptr;
+    double timestamp(0);
 
     // run the SLAM in another thread
     std::thread thread([&]() {
-
-        double m_last_ts = -1;
-        const float min_frame_gap = 0.9f/15.0f;
 
         for (unsigned int i = 0; i < frames.size(); ++i) {
             const frame& f = frames[i];
@@ -159,19 +167,25 @@ void mono_tracking(const std::shared_ptr<openvslam::config>& cfg,
             else if (f.number > d.end_frame)
                 break;
 
-            if (f.ts >= 0 && f.ts < m_last_ts + min_frame_gap) continue;
-            m_last_ts = f.ts;
+            if (flast)
+                timestamp += get_dt(*flast, f);
+            flast = &f;
 
-            const auto& frame = frames.at(i);
-            const auto imgFull = cv::imread(frame.color_path);
+            const auto imgFull = cv::imread(f.color_path);
+            if (imgFull.empty()) {
+                spdlog::warn("unable to read image %d", f.color_path);
+                continue;
+            }
+
             cv::Mat img;
-            cv::pyrDown(imgFull, img);
+            cv::resize(imgFull, img, cv::Size(), 0.5, 0.5, cv::INTER_AREA);
 
             const auto tp_1 = std::chrono::steady_clock::now();
 
             if (!img.empty() && (i % frame_skip == 0)) {
                 // input the current frame and estimate the camera pose
-                SLAM.feed_monocular_frame(img, frame.ts, mask);
+                spdlog::info("feeding frame {} ts {}", f.number, timestamp/*frame.ts*/);
+                SLAM.feed_monocular_frame(img, timestamp/*frame.ts*/, mask);
             }
 
             const auto tp_2 = std::chrono::steady_clock::now();
@@ -182,8 +196,8 @@ void mono_tracking(const std::shared_ptr<openvslam::config>& cfg,
             }
 
             // wait until the timestamp of the next frame
-            if (!no_sleep && i < frames.size() - 1) {
-                const auto wait_time = frames.at(i + 1).ts - (frame.ts + track_time);
+            if (!no_sleep && i < frames.size() - frame_skip) {
+                const auto wait_time = get_dt(f, frames.at(i + frame_skip)) - track_time;
                 if (0.0 < wait_time) {
                     std::this_thread::sleep_for(std::chrono::microseconds(static_cast<unsigned int>(wait_time * 1e6)));
                 }
